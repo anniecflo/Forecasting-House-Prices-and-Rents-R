@@ -1,0 +1,413 @@
+---
+title: "House Rent Prediction"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+### 1 . Importing Libraries
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(GGally)
+```
+
+### 2 . Importing Data and Summary
+```{r,include=FALSE}
+library(readxl)
+housedata <-read_excel("Housing_Data_new.xlsx",na="-6",col_names=TRUE)
+attach(housedata)
+per_median <- aggregate(PER ~ BEDRMS, housedata, median)
+housedata$TENURE <-  as.factor(TENURE)
+```
+
+```{r}
+summary(housedata)
+```
+
+### 3. Analysing Response variable FMR (Fair Market Rent) against each of the possible   predictor variables
+
+#### 3.1 Barplot for FMR (Fair Market Rent) vs Age
+```{r}
+ggplot(housedata, aes(x = AGE, y = FMR)) + 
+  geom_point(color ='blue') + 
+  geom_smooth(method = "lm", color="red",se = TRUE) + 
+  labs(x="Age of the House", y = "Fair Market Rent", title = "Relation FMR vs Age" ) 
+
+reg_age <- lm(FMR~AGE)
+summary(reg_age)
+```
+
+#### Comments
+Here we observe that the Age of the House just explains 0.1% of the variance in the Fair Market Rent,keeping other variables constant. This varibale is not very helpful in regression and hence can be dropped from the model.
+We can say that the Age of the house has no impact on the price and this may be due to the renovations which are not accounted for.
+
+#### 3.2 Barplot for FMR (Fair Market Rent) vs Region
+```{r}
+ggplot(housedata, aes(factor(REGION), FMR)) + 
+  geom_boxplot() +
+  labs(x="Region", y = "Fair Market Rent", title = " FMR vs Region" )
+
+```
+
+#### Interpretation from Boxplot
+From Boxplot of Region wise rent, we can not say if there really is a difference between mean rent of each region.We perform ANOVA test to detect the relationship.
+
+#### 3.2.1 Anova FMR (Fair Market Rent) vs Region
+```{r}
+fit_region <- aov(FMR ~ REGION)
+summary(fit_region)
+```
+
+##### Inference from Anova
+Ho (null Hypothesis) =  There is no relationship
+Ha (alternate hypothesis) =  There is relationship
+
+Low p values indicates the existence of relationship
+Now, let us check our assumptions:
+    Normality assumptions is not violated as number of data point for each region is greater than 30
+    To check equal standard deviation between regions, Levene Test is performed 
+
+#### 3.2.2 Lavene's Test 
+```{r}
+library(car)
+leveneTest(FMR, REGION)
+```
+
+##### Inference from leveneTest
+We do not reject our Null hypothesis that all standard deviations are equal. Assumptions are not violated here.
+We can conclude that there is a relationship between region and rent of the house.
+Now, we check which of the regions are different from other by performing pair wise Tukey's Honest significance difference test.
+
+#### 3.2.2 Tukey's HSD Test
+```{r}
+TukeyHSD(fit_region, conf.level = 0.9)
+```
+
+##### Inference from TukeyHSD
+From low p-values, we notice that there is a difference between mean rents of Midwest and Northeast region.
+
+#### 3.3 Scatter for FMR (Fair Market Rent) vs Bedrooms
+```{r}
+ggplot(housedata, aes(x = BEDRMS, y = FMR)) + 
+  geom_point(color ='blue') + 
+  geom_smooth(method = "lm", color="red",se = TRUE) + 
+  labs(x="Bedrooms", y = "Fair Market Rent", title = "Relation FMR vs Bedrooms" ) 
+
+reg_bdrms <- lm(FMR~BEDRMS)
+```
+
+##### Interpretation from ScatterPlot 
+We observe that there is a positive relationship between the Fair Market Rent and number of bedrooms.
+
+```{r}
+summary(reg_bdrms)
+```
+
+##### Inference from summary 
+From the summary of this linera model we can infer that 36.7% of the variation in the Fair Market Rent is explained by the variability in Bedrooms,keeping other variables constant.
+We can say that for every additional bedroom the Fair Market Rent increases by $195.057.
+The p_values indicate the significance of relationship
+
+#### 3.4 Scatter for FMR (Fair Market Rent) vs Number of units
+```{r}
+ggplot(housedata, aes(x = NUNITS, y = FMR)) + 
+  geom_point(color ='blue') + 
+  geom_smooth(method = "lm", color="red",se = TRUE) + 
+  labs(x="Number of Units", y = "Fair Market Rent", title = "Relation FMR vs Number of Units" ) 
+reg_nunits <- lm(FMR~NUNITS)
+
+```
+
+##### Interpretation from ScatterPlot
+Most of the data points lie in the range of 0-200 units. We observe that with the increase in  number of units the Fair market rent is decreased.
+
+```{r}
+summary(reg_nunits)
+```
+
+##### Inference from summary 
+Around 1.7% of the variance in Fair market rent is explained by the variability in number of units, keeping other variables constant.
+The p_values indicate the significance of relationship.
+
+#### 3.5 Scatter for FMR (Fair Market Rent) vs LMED
+```{r}
+ggplot(housedata, aes(x = LMED, y = FMR)) + 
+  geom_point(color ='blue') + 
+  geom_smooth(method = "lm", color="red",se = TRUE) + 
+  labs(x="Medain Income", y = "Fair Market Rent", title = "Relation FMR vs Median Income" )
+reg_lmed <- lm(FMR~LMED)
+```
+
+##### Interpretation from ScatterPlot
+We observe a positive relation between Median income of the area and Fair market rent, which means that higher rent can be expected in an area where people have higher incomes.
+
+```{r}
+summary(reg_lmed)
+```
+
+##### Inference from summary 
+Median income explains around 24% variance in the Fair market rent, keeping other variables constant.
+The p_values indicate the significance of relationship.
+
+#### 3.6 Scatter for FMR (Fair Market Rent) vs Person
+```{r}
+ggplot(housedata, aes(x = PER, y = FMR)) + 
+  geom_point(color ='blue') + 
+  geom_smooth(method = "lm", color="red",se = TRUE) + 
+  labs(x="Number of Persons", y = "Fair Market Rent", title = "Relation FMR vs Persons" )
+
+reg_per <- lm(FMR~PER)
+```
+
+##### Interpretation from ScatterPlot
+We observe that Fair market rent tends to increases with an increase in the number of people living in the house.
+
+```{r}
+summary(reg_per)
+```
+
+##### Inference from summary 
+Number of persons explain 11.21% variability in that Fair market rent, keeping other variables constant.
+The p_values indicate the significance of relationship.
+
+#### 3.7 Scatter for FMR (Fair Market Rent) vs unemployment rate
+```{r}
+ggplot(housedata, aes(x = Unemp_rate, y = FMR)) + 
+  geom_point(color ='blue') + 
+  geom_smooth(method = "lm", color="red",se = TRUE) + 
+  labs(x="Unemployment rate", y = "Fair Market Rent", title = "Relation FMR vs Unemployment rate" )
+
+reg_unemp <- lm(FMR~Unemp_rate)
+
+```
+
+##### Interpretation from ScatterPlot
+No effect of unemployment rate on Rent of the house 
+
+
+```{r}
+summary(reg_unemp)
+```
+
+##### Inference from summary 
+Unemployment rate does not explain the change in rent.
+
+#### 3.8 Box plot for FMR (Fair Market Rent) vs Tenure
+##### Changing the tenure variable to Factor
+```{r}
+ggplot(housedata, aes(factor(TENURE), FMR)) + 
+  geom_boxplot() +
+  labs(x="Tenure", y = "Fair Market Rent", title = " FMR vs Tenure" )+
+  geom_smooth(method = "lm",color ="red")
+
+```
+
+##### Interpretation from Boxplot
+There is a difference in mean Rent between Tenure of 1,2 and 3 years. ANOVA test will help us identify the relationship between tenure and fair market rent
+
+#### 3.8 Anova & Summary FMR (Fair Market Rent) vs Tenure
+```{r}
+aov_tenure <- aov(FMR~TENURE)
+summary(aov_tenure)
+
+a <- lm(FMR~factor(TENURE))
+summary(a)
+```
+
+##### Inference from Anova 
+Test proves that there is a relationship between Tenure and Fair market rent.
+###Inference from summary
+Tenure explains around 6% variance in Fair market rents, keeping other variables constant.
+The p_values indicate the significance of relationship.
+
+### From above analaysis, we shortlist these 6 predictors of Fair Market rent
+LMED,BEDRMS, NUNITS, PER, TENURE, REGION
+
+#### 4 . multicollinearity
+```{r}
+plot(~FMR+LMED+BEDRMS+NUNITS+PER+TENURE,main = "Simple scatterplot matrix")
+```
+
+#### 5 . covariance
+```{r}
+cor(housedata[sapply(housedata,is.numeric)])
+```
+#####Inference from correlation matrix
+From the matrix, we see that none of the correlation coefficients are greater than 0.7. The highest correlation is between PER(no. of persons) and BEDRMS(no. of bedrooms)
+
+### 6 . Bulding Models
+
+#### 6.1 Model 1
+```{r}
+house_rent_model1 <- lm(FMR ~ 
+                          LMED + 
+                          BEDRMS + 
+                          NUNITS + 
+                          PER +
+                          TENURE + 
+                          REGION)
+summary(house_rent_model1)
+```
+
+##### Inference from summary
+From the above regressed model, Region and TENURE are found to be insignificant variables based on p-values. Model is explaining 62.3% of the variability in Rent
+
+#### 6.2 Model 2
+```{r}
+house_rent_model2 <- lm(FMR ~ 
+                          LMED + 
+                          BEDRMS + 
+                          NUNITS + 
+                          PER)
+summary(house_rent_model2)
+```
+
+##### Inference from summary
+This model has all the low p values with no significant change in r square and standard error from the previous model(Model 1).
+
+#### 6.3 Model 3
+```{r}
+house_rent_model3 <- lm(FMR ~ 
+                          LMED + 
+                          BEDRMS + 
+                          PER)
+summary(house_rent_model3)
+```
+
+##### Inference from summary
+After removing NUNITS(no. of units) variable, there is not much change in R-squared and standard error. Also, p-values remain significant
+
+#### 6.4 Model 4(Adding log terms)
+```{r}
+house_rent_model2 <- lm(log(FMR) ~ 
+                          log(LMED) + 
+                          BEDRMS + 
+                          NUNITS + 
+                          PER)
+summary(house_rent_model2)
+```
+
+##### Inference from summary
+R-squared is improved by 3% with decrease in standard error.
+
+#### 6.5 Model 5
+```{r}
+house_rent_model <- lm(log(FMR) ~ 
+                          log(LMED) + 
+                          BEDRMS*PER +
+                          NUNITS)
+summary(house_rent_model)
+
+house_rent_model_no_interactive <- lm(log(FMR) ~ 
+                          log(LMED) + 
+                          NUNITS)
+summary(house_rent_model_no_interactive)
+```
+
+#### Inference from summary
+R-squared value has improved by 2% from previous model and the interaction term is coming out to be significant. It means that effect of number of bedrooms on rent is different depending on number of persons living in the household.
+
+This is the best model with highest R-squared, lowest standard error and all low p-values. 
+### Interpretation:
+p-values for log(LMED)(for example): Probability of getting the estimate as high as 0.9, if there was no relationship between median income and fair market rent, keeping number of bedrooms, number of persons and no of units fixed.
+Estimates of log(LMED):  For every 1% increase in median income in an area, rent of a household goes up by 0.9%.
+
+### 7 . Standardized Residual Plots
+```{r}
+house_rent_model.stres<- rstandard(house_rent_model)
+house_rent_model.stres
+pairs(~house_rent_model.stres+ FMR + LMED + BEDRMS + PER +NUNITS)
+```
+### 8 . plotting each variable with standard residuals
+
+#### 8.1 Standardized Residual vs Fitted values
+```{r}
+ggplot(housedata, aes(x = exp(house_rent_model$fitted.values), y = house_rent_model.stres)) + 
+  geom_point(color ='blue') + 
+  labs(x="Fitted Values", y = "Standardized Residuals", title = "Standardized Residual vs Fitted Values" ) +
+  geom_hline(aes(yintercept = mean(house_rent_model.stres)),color='red',linetype =  "dotdash",size = 1.1)
+```
+
+#### 8.2 Standardized Residual vs FMR
+```{r}
+ggplot(housedata, aes(x = FMR, y = house_rent_model.stres)) + 
+  geom_point(color ='blue') + 
+  labs(x="Free Market rent", y = "Standardized Residuals", title = "Standardized Residual vs FMR" ) +
+  geom_hline(aes(yintercept = mean(house_rent_model.stres)),color='red',linetype =  "dotdash",size = 1.1)
+```
+#### 8.3 Standardized Residual vs Medain income
+```{r}
+ggplot(housedata, aes(x = LMED, y = house_rent_model.stres)) + 
+  geom_point(color ='blue') + 
+  labs(x="Free Median Income", y = "Standardized Residuals", title = "Standardized Residual vs Medain income" ) +
+  geom_hline(aes(yintercept = mean(house_rent_model.stres)),color='red',linetype = "dotdash",size = 1.1)
+```
+
+#### 8.4 Standardized Residual vs  Bedrooms
+```{r}
+ggplot(housedata, aes(x = BEDRMS, y = house_rent_model.stres)) + 
+  geom_point(color ='blue') + 
+  labs(x="Bedrooms", y = "Standardized Residuals", title = "Standardized Residual vs  Bedrooms")+
+  geom_hline(aes(yintercept = mean(house_rent_model.stres)),color='red',linetype = "dotdash",size = 1.1)
+```
+#### 8.5 Standardized Residual vs Person
+```{r}
+ggplot(housedata, aes(x = PER, y = house_rent_model.stres)) + 
+  geom_point(color ='blue') + 
+  labs(x="Persons", y = "Standardized Residuals", title = "Standardized Residual vs Person") +
+  geom_hline(aes(yintercept = mean(house_rent_model.stres)),color='red',linetype = "dotdash",size = 1.1)
+```
+
+#### 8.6 Standardized Residual vs num of units
+```{r}
+ggplot(housedata, aes(x = NUNITS, y = house_rent_model.stres)) + 
+  geom_point(color ='blue') + 
+  labs(x="Number of UNITS", y = "Standardized Residuals", title = "Standardized Residual vs num     of units") +
+  geom_hline(aes(yintercept = mean(house_rent_model.stres)),color='red',linetype ="dotdash" ,      size = 1.1)
+```
+### 9 plotting histogram with normal curves for residuals
+```{r}
+ggplot(housedata, aes(house_rent_model.stres))  + 
+  geom_histogram(breaks = seq(-3, 4, 0.5), colour = "black", fill = "navyblue",    aes(y=..density..)) +
+  labs(x="Residuals", y = "Density", title = "Standardized Residual Normality Plot") +
+  stat_function(fun=dnorm,size = 1.1,color="red",
+      args=list(mean=mean(house_rent_model.stres),
+      sd=sd(house_rent_model.stres)))
+```
+### 10 . normal probability plot
+```{r}
+y <- quantile(house_rent_model.stres[!is.na(house_rent_model.stres)], c(0.25, 0.75))
+x <- qnorm(c(0.25, 0.75))
+slope <- diff(y)/diff(x)
+int <- y[1L] - slope * x[1L]
+
+ggplot(housedata, aes(sample=house_rent_model.stres))+stat_qq()+ geom_abline(slope = slope ,      intercept = int, color='red',size =1)
+  
+```
+#### Our assumptions that standard residuals of the model are normally distributed are violated here. This needs to be checked or taken care of when this model is applied in real situations
+
+### 11 . Creating a new dataframe for inference
+```{r}
+newdata <- data.frame(LMED = 55555, BEDRMS = 2, PER = 4, NUNITS = 10)
+```
+
+### 11.1 90% confidence interval for the mean
+```{r}
+conf_intvl <- predict(house_rent_model, newdata, interval="confidence", level = .90)
+exp(conf_intvl)
+```
+
+### 11.2 90% prediction interval for Y
+```{r}
+prediction <- predict(house_rent_model, newdata, interval="predict", level = .90)
+exp(prediction)
+```
+
+```{r}
+#detach(housedata)
+```
+
+
+
+
