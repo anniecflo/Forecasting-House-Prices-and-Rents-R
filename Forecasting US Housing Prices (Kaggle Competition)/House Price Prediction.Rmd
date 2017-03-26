@@ -1,0 +1,721 @@
+---
+title: "House Price Prediction"
+author: "Annie Lo"
+date: "3/25/2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache=TRUE)
+suppressPackageStartupMessages({
+  library(rpart)
+  library(randomForest)
+  library(xgboost)
+  library(ggplot2)
+  library(dplyr)
+  library(glmnet) #perform ridge and lasso
+  library(tabplot)
+  library(corrplot)
+  library(lattice)
+  library(vioplot)
+  library(VIM)
+  library(plotly)
+  library(cowplot)
+  library(mice)
+  library(magrittr)
+  library(data.table)
+  library(mlr)
+  library(mlbench) #feature selection
+  library(caret)   #feature selection
+  library(parallel)
+  library(parallelMap)
+  library(ggfortify)
+  library(stats)
+  library(Metrics)
+  library(checkmate)
+  library(FSelector)
+  library(knitr)
+})
+
+if(packageVersion("xgboost") < 0.6) stop("SL.xgboost requires xgboost version >= 0.6")
+
+#load.libraries <- c('data.table', 'dplyr')
+#install.lib <- load.libraries[!load.libraries %in% installed.packages()]
+#for(libs in install.lib) install.packages(libs, dependences = TRUE)
+#sapply(load.libraries, require, character = TRUE)
+```
+
+```{r}
+train <- read.csv("train.csv", stringsAsFactors = FALSE)
+```
+
+#Understanding Data
+```{r}
+#summary(train)
+#str(train)
+dim(train)
+#head(train)
+#colnames(train)
+head(rownames(train))
+####Convert character to factors 
+cat_var <- names(train)[which(sapply(train, is.character))]
+cat_car <- c(cat_var, 'BedroomAbvGr', 'HalfBath', ' KitchenAbvGr','BsmtFullBath', 'BsmtHalfBath', 'MSSubClass')
+numeric_var <- names(train)[which(sapply(train, is.numeric))]
+
+train <- data.table(train)
+
+####Convert character to factors 
+train[,(cat_var) := lapply(.SD, as.factor), .SDcols = cat_var]
+```
+
+
+# EDA - plotting
+```{r}
+#Continuous Variable
+summary(train$LotArea) # to determine binwidth
+g1 <- ggplot(data = train) +
+  geom_histogram(mapping = aes(x = LotArea), binwidth =5000) + # histogram for continuous
+  ggtitle("Histogram for LotArea")
+
+summary(train$LotArea)
+outlier_lot = train %>% filter(LotArea>50000)
+g2 <- ggplot(data = outlier_lot) +
+  geom_histogram(mapping = aes(x = LotArea), binwidth =5000)
+
+g3 <- ggplot(data = train) +
+  geom_histogram(mapping = aes(x = SalePrice), binwidth =5000) + # histogram for continuous
+  ggtitle("Histogram for SalePrice")
+
+summary(train$SalePrice)
+outlier_saleprice = train %>% filter(SalePrice>400000)
+g4 <- ggplot(data = outlier_saleprice) +
+  geom_histogram(mapping = aes(x = SalePrice), binwidth =5000)
+
+plot_grid(g1,g2,g3,g4,ncol=2)
+
+#Categorical Variable
+ggplot(data = train, mapping = aes(x = as.factor(OverallQual) , y = SalePrice)) +
+  geom_boxplot()
+
+bwplot(OverallQual ~ SalePrice, data = train) #saleprice looks highly positively correlated to OverallQual
+bwplot(Neighborhood ~ SalePrice, data = train) #few outliers in NoRidge, saleprice changes among Neighborhood
+#bwplot(MSSubClass ~ SalePrice, data = train)
+#bwplot(MSZoning ~ SalePrice, data = train)
+#bwplot(LandSlope ~ SalePrice, data = train) #no significant change
+bwplot(Condition1 ~ SalePrice, data = train) #saleprice changes among Condition1
+bwplot(BldgType ~ SalePrice, data = train) # alot of outliers in 1Fam
+#bwplot(HouseStyle ~ SalePrice, data = train)
+b9=bwplot(OverallCond ~ SalePrice, data = train) #not as visually strong as OverallQual
+#bwplot(SaleType ~ SalePrice, data = train) 
+#bwplot(SaleCondition ~ SalePrice, data = train) 
+
+#visualize a categorical and a continuous variable
+colnames(train)[which(grepl("Qual", colnames(train)))]
+#[1] "OverallQual"  "ExterQual"    "BsmtQual"     "LowQualFinSF" "KitchenQual"  "GarageQual" 
+ggplot(data = train, mapping = aes(x=LotArea, colour = KitchenQual)) +
+  geom_freqpoly(binwidth = 5000)
+
+ggplot(data = train, mapping = aes(x=SalePrice, colour = KitchenQual)) +
+  geom_freqpoly(binwidth = 10000)
+
+ggplot(data = train, mapping = aes(x=SalePrice, colour = Neighborhood)) +
+  geom_freqpoly(binwidth = 10000)
+
+ggplot(data = train, mapping = aes(x=SalePrice, colour = as.factor(YrSold))) +
+  geom_freqpoly(binwidth = 10000)
+
+ggplot(data = train, mapping = aes(x=SalePrice, colour = BldgType)) +
+  geom_freqpoly(binwidth = 10000)
+
+```
+
+#EDA - Data.table
+```{r}
+train[, .N, by=Neighborhood]
+train[, (avg = mean(SalePrice)), by = Neighborhood]
+#Avg. sale price changes a lot among nieghborhood & OverallQual
+head(arrange(train[, .(avg = mean(SalePrice)), by = .(Neighborhood,OverallQual)],  desc(avg)), n = 10) #high mean sale price of NoRidge neighborhood is caused by few outliers as seen in boxplot
+arrange(train[Neighborhood=='NoRidge', .(avg = mean(SalePrice)), by = .(Neighborhood,OverallQual)],  desc(avg))
+
+
+```
+
+#Corr plot (Continues v.s. Continuous Variables)
+```{r}
+# how to explore relationship between continuous feature and response: calculate the correlation
+# first find out those columns
+contVar <- names(train)[which(sapply(train, is.numeric))]
+length(contVar) #37 continuous variables in total
+trainCont <- train[, contVar]
+dim(trainCont)
+
+#colSums(sapply(train[,.SD, .SDcols = cat_var], is.na))
+
+correlations <- cor(trainCont, use = "pairwise.complete.obs") #use pariwise to delete rows with NA
+corrplot::corrplot(correlations, method = "square")
+# some features are not helpful at all, so we choose corr larger than |0.5|
+rowInd <- apply(correlations, 1, function(x) return(sum(x > 0.5 | x < -0.5) > 1))
+corrplot::corrplot(correlations[rowInd, rowInd], method = "square")
+
+# We can see SalePrice is more positvvely correlated to OverallQual, GrLivArea, GarageCars, GarageArea
+```
+
+#Table Plot 
+```{r}
+tableplot(train, select = c(SalePrice, OverallQual))
+tableplot(train, select = c(SalePrice, OverallQual, LotArea, Neighborhood, OverallCond, YearBuilt))
+
+for (i in 1:16) {
+  plot(tableplot(train, select = c(81, ((i - 1) * 5 + 1):(i * 5)),
+                 sortCol = 6, nBins = 73, plot = FALSE), fontsize = 12)
+  }
+
+train=train[,-c(1)] #remove ID column
+       #, title = paste("log(SalePrice) vs ", paste(colnames(data)[((i - 1) * 5 + 1):(i * 5)], collapse = "+"), sep = ""), showTitle = TRUE, fontsize.title = 12)
+
+```
+
+
+#Missing Data
+```{r}
+sort(sapply(train, function(x) { sum(is.na(x)) }), decreasing=TRUE) #rank # of missing values
+# check Percentage of NA
+MissingPercentage <- function(x){round(sum(is.na(x))/length(x)*100, digits = 2)}
+sort(apply(train,2,MissingPercentage),decreasing=TRUE)
+
+#colSums(sapply(train[,.SD, .SDcols = cat_var], is.na))
+#colSums(sapply(train[,.SD, .SDcols = numeric_var], is.na))
+
+# Plot of missing data
+aggr_plot <- aggr(train, 
+                  col=c('navyblue','red'), 
+                  numbers=TRUE, 
+                  sortVars=TRUE, 
+                  labels=names(train), 
+                  cex.axis=.7, 
+                  gap=3, 
+                  ylab=c("Histogram of missing data","Pattern"))
+
+# Delete columns with more than 5% missing data 
+train <- subset(train, select = -c(PoolQC,MiscFeature,Alley,Fence,FireplaceQu,LotFrontage,GarageType, GarageYrBlt,GarageFinish,GarageQual,GarageCond))
+
+sum.na <- sort(sapply(train, function(x) { sum(is.na(x)) }), decreasing=TRUE)
+names(which(sum.na < dim(train)[1] * 0.05 & sum.na != 0)) #name of the columns being impute
+#[1] "BsmtExposure" "BsmtFinType2" "BsmtQual"     "BsmtCond"     "BsmtFinType1" "MasVnrType"  
+#[7] "MasVnrArea"   "Electrical" 
+
+#Investigate the reason that caused missing values
+# When the Basement is not finished, there is no related features
+#We see all features that have "Bsmt" in their column and see if there is missing Basement value
+#their basement area is also equal to 0
+colnames(train)[which(grepl("Bsmt", colnames(train)))] #choose column names with "Bsmt"
+with(subset(train, is.na(BsmtExposure)), summary(TotalBsmtSF))
+with(subset(train, is.na(BsmtExposure)), summary(BsmtFinSF1))
+with(subset(train, is.na(BsmtExposure)), summary(BsmtFinSF2))
+with(subset(train, is.na(BsmtExposure)), summary(BsmtUnfSF)) # so those missing basement features are all unfinished basements
+
+train$BsmtExposure[which(is.na(train$BsmtExposure))] <- 'Unf'
+train$BsmtFinType1[which(is.na(train$BsmtFinType1))] <- 'Unf'
+train$BsmtFinType2[which(is.na(train$BsmtFinType2))] <- 'Unf'
+train$BsmtQual[which(is.na(train$BsmtQual))] <- 'Unf'
+train$BsmtCond[which(is.na(train$BsmtCond))] <- 'Unf'
+
+# Impute the rest of the columns with missing values (convert categorical variables to factors)
+train$MasVnrType <- as.factor(train$MasVnrType)
+train$Electrical <- as.factor(train$Electrical)
+imp.train <- mice(train, m=1, method='cart', printFlag=FALSE)
+sort(sapply(complete(imp.train), function(x) { sum(is.na(x)) }), decreasing=TRUE)
+complete(imp.train) #check data after imputed
+
+# Test Original and Imputed
+table(train$MasVnrType)
+table(imp.train$imp$MasVnrType)
+
+# Visualize density blue before & after imputation- blue: actual; red:imputed
+densityplot(imp.train, ~MasVnrType)
+densityplot(imp.train, ~MasVnrArea)
+
+# Merge to Original Data
+train <- complete(imp.train)
+
+#Confirm no NAs
+sum(sapply(train, function(x) { sum(is.na(x)) }))
+
+#Now training data has 69 columns
+dim(train)
+
+```
+
+
+
+#Feature Engineering
+```{r}
+cat('Percentage of houses remodeled',sum(train[,'YearRemodAdd', with = FALSE] != train[,'YearBuilt', with = FALSE])/ dim(train)[1])
+
+train$remod <- with(train, ifelse(YearBuilt != YearRemodAdd, 1, 0))
+
+boxplot(subset(train, remod == 1)$SalePrice,
+        subset(train, remod == 0)$SalePrice)
+summary(subset(train, remod == 1)$SalePrice)
+summary(subset(train, remod == 0)$SalePrice)
+
+boxplot(log(subset(train, remod == 1)$SalePrice),
+        log(subset(train, remod == 0)$SalePrice))
+
+
+train$age_since_remod <- train$YrSold - train$YearRemodAdd
+train$age_since_built  <- train$YrSold - train$YearBuilt
+# Total SF for house (incl. basement)
+train$AllSF <- with(train, GrLivArea + TotalBsmtSF)
+
+train$TotalFloor <- with(train, X1stFlrSF + X2ndFlrSF)
+
+# Total number of bathrooms
+train$TotalBath <- with(train, BsmtFullBath + 0.5 * BsmtHalfBath + FullBath + 0.5 * HalfBath)
+
+colnames(train)[which(grepl("Qual", colnames(train)))] #choose column names with "Qual"
+#[1] "OverallQual"  "ExterQual"    "BsmtQual"     "LowQualFinSF" "KitchenQual"  "GarageQual" 
+
+train$SimOverallCond <- with(train, ifelse(OverallCond <= 3, "low",
+                                           ifelse(OverallCond <= 6, "med", "high")))
+
+train$SimOverallQual <- with(train, ifelse(OverallQual <= 3, "low",
+                                           ifelse(OverallQual <= 6, "med", "high")))
+
+
+```
+
+### Modeling - Predicting SalePrice ###
+
+#Sampling
+```{r}
+set.seed(2)
+train.ind <- sample(1:dim(train)[1], dim(train)[1] * 0.7)  #select 70% as training data
+test.ind = -train.ind
+train.data <- train[train.ind, ]
+test.data <- train[-train.ind, ]
+
+```
+
+
+#Multiple-Regression Model (Ridge & Lasso)
+
+```{r}
+train.dummy <- train
+
+# convert any qualitative variables to dummy variables
+x=model.matrix(SalePrice~.,train.dummy)
+head(x)
+y=log(train.dummy$SalePrice)
+
+training_x = x[train.ind,]
+testing_x = x[test.ind,]
+
+training_y = y[train.ind]
+testing_y = y[test.ind]
+
+#lambda 10^10 to 10^-2 #lambda is regularization parameter
+grid = 10^seq (10,-2,length =100)
+ridge_model = glmnet(training_x,training_y,alpha = 0,lambda = grid, standardize = FALSE)
+dim(coef(ridge_model)) # 230 for predictor, 100 for lambda
+
+plot(ridge_model, xvar = "lambda", label = TRUE)
+
+######### Cross validation ##########
+
+### choose the best value of lambda that would minimize the error. Run cross validation
+set.seed(2)
+#cv_error - to find error in cross-validation
+cv_error = cv.glmnet(training_x, 
+                     training_y, 
+                     alpha = 0) #default 10 fold cv
+plot(cv_error) # cross-validation curve (red dotted line), upper and lower standard deviation curves 
+#to get lambda when error is the smallest
+best_lambda = cv_error$lambda.min
+best_lambda
+
+# model with best lambda
+model_coef = predict(ridge_model, 
+                     type = "coefficients",
+                     s= best_lambda)
+
+### test the model 
+predicted_y = predict(ridge_model, 
+                      s= best_lambda,
+                      newx = testing_x)
+# RMSE
+sqrt(mean((testing_y-predicted_y)^2)) #0.1830604
+# MAPE
+sum(abs((testing_y - predicted_y)/testing_y)*100)/dim(predicted_y)[1] #0.7551789
+
+
+##### LASSO #########
+lasso_model = glmnet(training_x, 
+                     training_y, 
+                     alpha =1,
+                     lambda=grid,
+                     standardize=FALSE)
+
+plot(lasso_model, xvar = "lambda",label = TRUE)
+
+set.seed(2)
+cv_error = cv.glmnet(training_x, 
+                     training_y, 
+                     alpha = 1)
+best_lambda = cv_error$lambda.min
+best_lambda
+
+plot(cv_error)
+
+### Final LASSO
+model_coef = predict(lasso_model, 
+                     type = "coefficients",
+                     s= best_lambda)
+
+### test the model 
+predicted_y_lasso = predict(lasso_model, 
+                      s= best_lambda,
+                      newx = testing_x)
+### RMSE
+sqrt(mean((testing_y-predicted_y_lasso)^2)) #0.1917553
+# MAPE
+sum(abs((testing_y - predicted_y_lasso)/testing_y)*100)/dim(predicted_y_lasso)[1] #0.8019566
+
+#select best lambda
+cvfit <- cv.glmnet(training_x, 
+                     training_y)
+plot(cvfit) 
+cvfit$lambda.min # 0.004918183
+cvfit$lambda.1se # 0.0164838
+x = coef(cvfit, s = "lambda.min")
+x2 = coef(cvfit, s = "lambda.1se")
+
+# model with best lambda
+predicted_y = predict(cvfit, newx = testing_x, s = "lambda.1se")
+
+### RMSE
+sqrt(mean((testing_y-predicted_y)^2)) #0.1920184
+
+# MAPE
+sum(abs((testing_y - predicted_y)/testing_y)*100)/dim(predicted_y)[1] #0.8545523
+
+
+```
+
+# Feature Selection - rfe
+```{r}
+train.fs <- train.data
+train.fs$LogSalePrice <- log(train.fs$SalePrice)
+dim(train.fs)
+
+# ensure the results are repeatable
+set.seed(7)
+# define the control using a random forest selection function
+control <- rfeControl(functions=rfFuncs, method="cv", number=5, verbose=FALSE)
+# run the RFE algorithm
+which(colnames(train.fs) %like% "SalePrice")
+results1 <- rfe(train.fs[,-c(69,78)], train.fs[,78], sizes=c(10:50), rfeControl=control)
+# summarize the results
+print(results1)
+# list the chosen features
+predictors(results1)
+# plot the results
+plot(results1, type=c("g", "o"))
+
+features <- data.frame(predictors(results1))
+features <- as.vector(t(features)[1,]) #turn to vector
+features
+#[1] "Neighborhood"    "AllSF"           "OverallQual"     "TotalFloor"     
+#[5] "GrLivArea"       "SimOverallQual"  "TotalBsmtSF"     "GarageArea"     
+#[9] "BsmtFinSF1"      "OverallCond"     "X1stFlrSF"       "TotalBath"      
+#[13] "LotArea"         "BsmtFinType1"    "YearRemodAdd"    "GarageCars"     
+#[17] "age_since_built" "YearBuilt"       "age_since_remod" "X2ndFlrSF"      
+#[21] "Fireplaces"      "BsmtUnfSF"       "Exterior1st"     "OpenPorchSF"    
+#[25] "Exterior2nd"     "SimOverallCond"  "MSZoning"        "MSSubClass"     
+#[29] "CentralAir"      "KitchenQual"     "ExterQual"       "BldgType"       
+#[33] "BsmtQual"        "BsmtExposure"    "WoodDeckSF"      "HouseStyle"     
+#[37] "FullBath"        "BsmtFullBath"    "KitchenAbvGr"    "TotRmsAbvGrd"   
+#[41] "Foundation" 
+```
+
+#Multi-regression
+```{r}
+sort(sapply(train.data.f, function(x) { sum(is.na(x)) }), decreasing=TRUE)
+l.model1=lm(log(SalePrice) ~ AllSF+Neighborhood+OverallQual+SimOverallQual+TotalBsmtSF+GarageArea+TotalBath+GarageCars+BsmtFinSF1+OverallCond+age_since_remod+KitchenQual+LotArea, data=train.data.f)
+summary(l.model1)
+
+#train RMSE
+sqrt(mean(l.model1$residuals^2))  #0.12745
+predict_model= predict(l.model1,test.data.f)
+#test RMSE
+sqrt(mean((predict_model - log(test.data.f$SalePrice))^2)) # 0.1784472
+#MAPE - test data
+mean(abs((log(test.data.f$SalePrice) - predict_model)/log(test.data.f$SalePrice))*100) #0.8370609
+
+library(car)
+vif(l.model1) #looks good
+par(mfrow=c(2,2))
+plot(l.model1)
+
+# Linear Regression Assumptions-Independence
+library(lmtest)
+dwtest(l.model1) #However, residuals are autocorrelated (p-value > 0.05, reject H0)
+```
+
+
+#Random Forest
+
+```{r}
+# Change all the categorical features to factor type.
+for(i in 1:dim(train)[2]) {
+  if(is.character(train[, i])) {
+    train[, i] <- as.factor(train[, i])
+  }
+}
+train.data <- train[train.ind, ]
+
+train.data.f <- train.data[,which(names(train.data) %in% features | names(train.data) %in% c('SalePrice'))]
+
+test.data.f <- test.data[,which(names(train.data) %in% features | names(train.data) %in% c('SalePrice'))]
+
+rf.formula <- paste("log(SalePrice) ~ .-SalePrice")
+rf <- randomForest(as.formula(rf.formula), data = train.data.f, importance = TRUE) #ntree default is 500
+str(rf)
+
+#output 1st tree
+getTree(rf, k = 1, labelVar = TRUE) # output tree 1 for example with variable labeled
+
+#check margin
+par(mar=rep(2,4))
+# check the setting in par(), like 
+par()$mfrow
+par(mfrow = c(1,1))
+
+#plot - rank variables via their importance
+varImpPlot(rf)
+
+importance(rf, type = 1)
+importanceOrder= order(-rf$importance[, "%IncMSE"])
+names=rownames(rf$importance)[importanceOrder]
+for (name in names[1:2]) {
+  partialPlot(rf, train.data, eval(name), main=name, xlab=name)
+}
+
+plot(rf) # see oob error (Out of bag)
+print(rf)
+
+test.pred <- predict(rf, test.data.f) 
+#RMSE - SSE
+sum((test.pred - log(test.data.f$SalePrice))^2) #8.624485
+
+train.pred <- predict(rf, train.data.f)
+#RMSE - training data
+sqrt(mean((train.pred-log(train.data.f$SalePrice))^2))#0.05589537
+#MAPE - trainin data
+mean(abs((log(train.data.f$SalePrice) - train.pred)/log(train.data.f$SalePrice))*100) #0.3181685
+
+#RMSE - test data
+sqrt(mean((test.pred-log(test.data.f$SalePrice))^2))#0.1401633
+#MAPE - test data
+mean(abs((log(test.data.f$SalePrice) - test.pred)/log(test.data.f$SalePrice))*100) #0.7471139
+
+```
+
+#convert categorical variables to dummy
+```{r}
+train.data$MSSubClass <- as.factor(train.data$MSSubClass)
+train.data$YearBuilt <- as.factor(train.data$YearBuilt)
+train.data$YearRemodAdd <- as.factor(train.data$YearRemodAdd)
+train.data$YrSold <- as.factor(train.data$YrSold)
+train.data$age_since_remod <- as.integer(train.data$age_since_remod)
+train.data$age_since_built <- as.integer(train.data$age_since_remod)
+train.data$remod <- as.factor(train.data$remod)
+train.data$Street <- NULL
+train.data$Utilities <- NULL
+
+which(names(train.data) %in% 'SalePrice')
+feature.matrix <- model.matrix( ~ ., data = train.data[, -69])
+dim(feature.matrix)
+which(colnames(feature.matrix) %in% 'SalePrice')
+
+test.data$MSSubClass <- as.factor(test.data$MSSubClass)
+test.data$YearBuilt <- as.factor(test.data$YearBuilt)
+test.data$YearRemodAdd <- as.factor(test.data$YearRemodAdd)
+test.data$YrSold <- as.factor(test.data$YrSold)
+test.data$age_since_remod <- as.integer(test.data$age_since_remod)
+test.data$age_since_built <- as.integer(test.data$age_since_remod)
+test.data$remod <- as.factor(test.data$remod)
+test.data$Street <- NULL
+test.data$Utilities <- NULL
+
+which(names(test.data) %in% 'SalePrice')
+test.matrix <- model.matrix( ~ ., data = test.data[, -69])
+dim(test.matrix)
+which(colnames(test.matrix) %in% 'SalePrice')
+```
+
+
+# XgBoost Model - Best Model (MAPE:0.1175302)
+```{r}
+
+train.label <- as.integer(log(train.data$SalePrice))
+test.label <- as.integer(log(test.data1$SalePrice))
+
+```
+
+```{r}
+#Create train and test tasks to fit and evaluate model
+traintask <- makeRegrTask(data = train.data, target = "SalePrice")
+traintask <- createDummyFeatures(traintask)
+
+testtask <- makeRegrTask(data = test.data,target = "SalePrice")
+testtask <- createDummyFeatures(testtask)
+
+#normalize the variables
+traintask <- normalizeFeatures(traintask,method = "standardize")
+testtask <- normalizeFeatures(testtask,method = "standardize")
+
+#Feature importance
+im_feat <- generateFilterValuesData(traintask, method = c("information.gain","chi.squared"))
+plotFilterValues(im_feat,n.show = 20)
+
+#to launch its shiny application
+#plotFilterValuesGGVIS(im_feat)
+
+#Tune the model based on the hyperparameters
+set.seed(42)
+
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+#Define the learner
+lrn <- makeLearner(cl = "regr.xgboost", predict.type = "response")
+
+lrn$par.vals <- list(
+               objective= "reg:linear")
+
+#Set type of resampling
+rdesc <- makeResampleDesc("CV", iters = 5L)
+ctrl <- makeTuneControlRandom(maxit = 10L)
+
+
+#Define grid search parameters
+params <- makeParamSet(
+         makeDiscreteParam("booster",values = c("gbtree","gblinear")),
+         makeIntegerParam("max_depth",lower = 3L,upper = 10L),
+         makeNumericParam("min_child_weight",lower = 1L,upper = 10L),
+         makeNumericParam("subsample",lower = 0.5,upper = 1),
+         makeNumericParam("colsample_bytree",lower = 0.5,upper = 1),
+         makeNumericParam("eta", lower = 0.01, upper = 0.1),
+         makeDiscreteParam("nrounds", values = seq(100L, 1000L, by = 50L))
+)
+
+  
+mytune <- tuneParams(learner = lrn,
+               task = traintask,
+               resampling = rdesc,
+               measures = mlr::mae,
+               par.set = params,
+               control = ctrl,
+               show.info = FALSE)
+
+#[Tune-x] 1: booster=gbtree; max_depth=6; min_child_weight=2.61; subsample=0.807; colsample_bytree=0.828; eta=0.0568; nrounds=350
+```
+
+```{r}
+#Set parameters as defined by grid search in previous step
+#set the optimal hyperparameter
+lrn_tune <- setHyperPars(learner = lrn,
+                         par.vals = mytune$x,
+                         print_every_n = 100)
+
+#Fit the X-gradient boosted model
+set.seed(42)
+
+xgmodel <- mlr::train(lrn_tune,traintask)
+
+xgpred <- predict(xgmodel,testtask)
+xg_predData <- xgpred$data
+
+#Mean absolute error
+performance(xgpred, measures = mlr::mae) #mae: 19017.46
+
+#MAPE
+performance(xgpred, measures = mlr::mape) #mape:0.1175302
+
+#RMSE
+performance(xgpred, measures = mlr::rmse) #rmse: 30931.41 
+
+#Distribution of errors
+summary(abs(xg_predData$truth - xg_predData$response))
+
+#Plot distrbution of errors
+ggplot() + 
+  geom_density(aes(abs(xg_predData$truth - xg_predData$response))) +
+  xlab("Errors")
+```
+
+##Linear Regression (lm() using MLR package)
+
+```{r}
+#Create train and test tasks to fit and evaluate model
+#traintask_lm <- makeRegrTask(data = train.data, 
+#                             target = "SalePrice")
+
+#testtask_lm <- makeRegrTask(data = test.data,
+#                            target = "SalePrice")
+
+#normalize the variables
+#traintask_lm <- normalizeFeatures(traintask_lm,method = "standardize")
+#testtask_lm <- normalizeFeatures(testtask_lm,method = "standardize")
+```
+
+```{r}
+#Enable parallel processing, after automatic detection of CPU cores
+parallelStop()
+parallelStartSocket(cpus = detectCores())
+
+#require(FSelector)
+# lrn <- makeFilterWrapper(learner = "regr.lm",
+#                          fw.method = "chi.squared",
+#                          fw.perc = res$x$fw.perc)
+
+set.seed(42)
+
+inner <- makeResampleDesc("CV", iters = 3)
+lrn <- makeFeatSelWrapper(learner = "regr.lm",
+                          resampling = inner,
+                          control = makeFeatSelControlSequential(method = "sbs"),
+                          show.info = FALSE,
+                          measures = mlr::mae)
+
+#lm_mod <- mlr::train(lrn,traintask)
+
+#lmpred <- predict(lm_mod, 
+#                  testtask)
+
+#predData_lm <- lmpred$data
+
+#Mean absolute error
+#performance(lmpred, measures = mlr::mae)
+
+#summary(abs(predData_lm$truth - predData_lm$response)) #Distribution of errors
+```
+
+
+
+#Submit to Kaggle
+```{r}
+#load data
+test=read.csv('test.csv',header=TRUE)
+
+test$Id=NULL
+submission<-fread(SUBMISSION,colClasses = c("integer","numeric"))
+submission$SalePrice=predict(gb_dt,dtest)
+write.csv(submission,"xgb.csv",row.names = FALSE)
+```
+
